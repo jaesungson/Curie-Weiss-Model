@@ -1,11 +1,15 @@
 import math
+import numpy as np
+from numpy.random import normal, binomial
 from scipy import optimize
 from scipy.stats import norm
 from scipy.special import comb, logsumexp
 from multiprocessing import Pool
 from collections import Counter
-import numpy as np
 import warnings
+
+# import custom packages #
+from SpecialPoints import G1, G2, G1Sampler, G2Sampler
 
 
 ### Reference by the authors Mukherjee, Son, & Bhattacharya, FLUCTUATIONS OF THE MAGNETIZATION IN THE p-SPIN CURIE-WEISS MODEL ###
@@ -30,7 +34,7 @@ def H1(beta, h, p, x):
 # The second derivative of the H function
 def H2(beta, p, x):
     return beta * p*(p-1) * x ** (p-2) - 1/(1 - x**2)
-
+    
 
 # Define the maximizers of the function H
 """
@@ -87,18 +91,29 @@ def mstar(beta, h, p, s=10):
         warnings.warn("The second derivative evaluated at the maximizer is close to 0 suggesting the parameters are near the special point. If the parameters are at the special point, we only have one maximizer. If they are near the special point, there can only be at most 2 maximizers. Make sure to increase the function argument 's' to avoid missing any maximizers")
     
     for i in range(5):
-        if i != maximizer_index and abs(l[maximizer_index]- l[i]) < 1e-5:
+        if i != maximizer_index and abs(l[maximizer_index]- l[i]) < 1e-3:
             other_maximizer_indices.append(i)
     if len(other_maximizer_indices) == 0:
         if maximizer != 0:
             return np.array([maximizer])
         else:
             warnings.warn("mstar is 0 but could be close to 1 or -1.")
-            return [np.array([maximizer])]
+            return np.array([maximizer])
     else:
         list_of_maximizers = [maximizer] + [m[i] for i in other_maximizer_indices]
         final_maximizers = sorted(list(set(np.round(list_of_maximizers, 8))))
         return np.array(final_maximizers)
+
+
+# critical (threshold) for beta if h = 0
+def beta_threshold(p):
+    if p == 2:
+        return 0.5
+    def Hmax(beta):
+        m = mstar(beta, 0, p)[-1]
+        return H(beta, 0, p, m) - 1e-10
+    # it can be proven that this threshold is before log(2) for every p >= 2
+    return optimize.brentq(Hmax, 1e-10, np.log(2))
 
 
 
@@ -113,7 +128,7 @@ class CWModel:
         m = self.maximizers
         self.sd = np.sqrt(-H2(beta, p, m))
         if len(m) > 1:
-            self.weights = np.sqrt((m**2-1) * H2(beta, p, m))
+            self.weights = ((m**2-1) * H2(beta, p, m))**(-1/2)
             self.weights /= self.weights.sum()
             self.point = "critical"
         else:
@@ -166,12 +181,12 @@ class CWModel:
             return np.sum(self.pmf(beta_hat, h) * mag_values ** p) - x ** p
         
         i = -0.35
-        while True and i < 0:
+        while i < 0:
             try:
                 return optimize.brentq(f, (1-N**i)*beta, (1+N**i)*beta)
             except ValueError as e:
                 i += 0.1
-        return np.inf
+        return optimize.newton(f, beta)
             
     # MLE of h when beta is known for a random sample x from CW beta, h, p distribution
     def MLE_h(self, x):
@@ -182,11 +197,12 @@ class CWModel:
             return np.sum(self.pmf(beta, h_hat) * mag_values) - x
         
         i = -0.35
-        while True and i < 0:
+        while i < 0:
             try:
                 return optimize.brentq(f, h-N**i, h+N**i)
             except ValueError as e:
                 i += 0.1
+        return optimize.newton(f, h)
     
     # parallelize MLE_beta
     def MLE_beta_parallel(self, samples:list):
@@ -229,9 +245,11 @@ class CWModel:
     def asymptotic_quantiles_h(self, q):
         assert 0 <= q <= 1
         sd = self.sd
+        beta, h, p  = self.beta, self.h, self.p
         if self.point == 'regular':
-            norm.ppf(q, scale=sd)
+            return norm.ppf(q, scale=sd)
         elif self.point == 'special':
+            m = self.maximizers[0]
             if q == 0.5:
                 return 0
             def f(t):
@@ -241,28 +259,169 @@ class CWModel:
             else:
                 return optimize.brentq(f, 0, 50)
         else:
+            beta_t = beta_threshold(p)
             w = self.weights
             if p % 2 == 1:
-                if q < w[0]/4:
-                    return norm.ppf(2*q/w[0], scale = sd[0])
-                elif w[0]/4 <= q <= w[0]/4 + 1/2:
-                    return 0
-                else:
-                    return norm.ppf(2*q-1, scale=sd[1])
-            if h == 0 and beta > beta_t:
-                if q < 0.25:
-                    return norm.ppf(2*q, scale = sd)
-                elif 0.25 <= q <= 0.75:
-                    return 0
-                else:
-                    return norm.ppf(2*q-1, scale=sd)
-            if h == 0 and beta == beta_t:
                 if q < w[0]/2:
                     return norm.ppf(q/w[0], scale = sd[0])
-                elif w[0]/2 <= q <= 1-w[0]/2:
+                elif w[0]/2 <= q <= w[0]/2 + 1/2:
                     return 0
                 else:
-                    return norm.ppf((q-1), scale=sd)
-            
+                    return norm.ppf((q-w[0])/(1-w[0]), scale=sd[1])
+            else:
+                if h == 0 and beta > beta_t:
+                    if q < 0.25:
+                        return norm.ppf(2*q, scale = sd[0])
+                    elif 0.25 <= q <= 0.75:
+                        return 0
+                    else:
+                        return norm.ppf(2*q-1, scale=sd[0])
+                if h == 0 and beta == beta_t:
+                    if q < w[0]/2:
+                        return norm.ppf(q/w[0], scale = sd[0])
+                    elif w[0]/2 <= q <= 1-w[0]/2:
+                        return 0
+                    else:
+                        return norm.ppf((q-1), scale=sd)
+                elif h == 0:
+                    return warnings.warn("All estimators are inconsistent in this regime.")
+                else:
+                    if q < w[0]/2:
+                        return norm.ppf(q/w[0], scale = sd[0])
+                    elif w[0]/2 <= q <= w[0]/2 + 1/2:
+                        return 0
+                    else:
+                        return norm.ppf((q-w[0])/(1-w[0]), scale=sd[1])
+    
+    def asymptotic_quantiles_beta(self, q):
+        assert 0 <= q <= 1
+        beta, h, p  = self.beta, self.h, self.p
+        sd = self.sd/(p*self.maximizers**(p-1))
+        if self.point == 'regular':
+            if self.maximizers != 0:
+                return norm.ppf(sd)
+            else:
+                return warnings.warn("All estimators are inconsistent in this regime.")
+        elif self.point == 'special':
+            m = self.maximizers[0]
+            if q == 0.5:
+                return 0
+            def f(t):
+                return G2(t, beta, h, p, m) - q
+            if q < 0.5:
+                return optimize.brentq(f, -50, 0)
+            else:
+                return optimize.brentq(f, 0, 50)
+        else:
+            beta_t = beta_threshold(p)
+            w = self.weights
+            if p % 2 == 1:
+                if h == 0 and beta == beta_t:
+                    return warnings.warn("MLE is not root N consistent at the threshold.")
+                else:
+                    if q < w[0]/2:
+                        return norm.ppf(q/w[0], scale = sd[0])
+                    elif w[0]/2 <= q <= w[0]/2 + 1/2:
+                        return 0
+                    else:
+                        return norm.ppf((q-w[0])/(1-w[0]), scale=sd[1])
+            else:
+                if h > 0:
+                    if q < w[0]/2:
+                        return norm.ppf(q/w[0], scale = sd[0])
+                    elif w[0]/2 <= q <= w[0]/2 + 1/2:
+                        return 0
+                    else:
+                        return norm.ppf((q-w[0])/(1-w[0]), scale=sd[1])
+                elif h < 0:
+                    if q < (1-w[0])/2:
+                        return norm.ppf(q/w[0], scale = sd[0])
+                    elif (1-w[0])/2 <= q <= (1-w[0])/2 + 1/2:
+                        return 0
+                    else:
+                        return norm.ppf((q-w[0])/(1-w[0]), scale=sd[1])
+                elif h == 0 and beta > beta_t:
+                    return norm.ppf(q, scale=sd)
+                elif h == 0 and beta == beta_t:
+                    return warnings.warn("MLE is not root N consistent at the threshold.")
+                else:
+                    return warnings.warn("All estimators are inconsistent in this regime.")
+        
+    def asymptotic_generate_mle_h(self, num_samples):
+        assert num_samples >= 1
+        n = num_samples
+        beta, h, p = self.beta, self.h, self.p
+        m = self.maximizers[0]
+        sd = self.sd
+        
+        if self.point == 'regular':
+            return  normal(0, scale=sd, size=n)
+        elif self.point == 'special':
+            return G1Sampler(beta, h, p, m).rvs(size=n)
+        else:
+            w = self.weights
+            if p % 2 == 1:
+                n0 = binomial(n, 0.5)
+                nn = binomial(n-n0, w[0])
+                npos = num_samples - n0 - nn
+                return np.concatenate((-abs(normal(0, scale=sd[0], size=nn)), np.zeros(n0), abs(normal(0, scale=sd[1], size=npos))))
+            else:
+                beta_t = beta_threshold(p)
+                if h != 0:
+                    n0 = binomial(n, 0.5)
+                    nn = binomial(n-n0, w[0])
+                    npos = n - n0 - nn
+                    return np.concatenate((-abs(normal(0, scale=sd[0], size=nn)), np.zeros(n0), abs(normal(0, scale=sd[1], size=npos))))
+                elif h == 0 and beta > beta_t:
+                    n0 = binomial(n, 0.5)
+                    return np.concatenate((normal(0, scale=sd[0], size=n-n0), np.zeros(n0)))
+                elif h == 0 and beta == beta_t:
+                    n0 = binomial(n, w[1])
+                    return np.concatenate((normal(0, scale=sd[0], size=n-n0), np.zeros(n0)))
+                else:
+                    return warnings.warn("All estimators are inconsistent in this regime.") 
+     
+    def asymptotic_generate_mle_beta(self, num_samples):
+        assert num_samples >= 1
+        n = num_samples
+        beta, h, p = self.beta, self.h, self.p
+        m = self.maximizers[0]
+        sd = self.sd/(p*self.maximizers**(p-1))
+        
+        if self.point == 'regular':
+            if m != 0:
+                return normal(0, scale=sd, size=n)
+            else:
+                return warnings.warn("All estimators are inconsistent in this regime.")
+        elif self.point == 'special':
+            return G2Sampler(beta, h, p, m).rvs(size=n)
+        else:
+            w = self.weights
+            beta_t = beta_threshold(p)
+            if p % 2 == 1:
+                if beta != beta_t and h != 0:
+                    n0 = binomial(n, 0.5)
+                    nn = binomial(n-n0, w[0])
+                    npos = num_samples - n0 - nn
+                    return np.concatenate((-abs(normal(0, scale=sd[0], size=nn)), np.zeros(n0), abs(normal(0, scale=sd[1], size=npos))))
+                else:
+                    return warnings.warn("MLE is not root N consistent at the threshold.")
+            else:
+                if h > 0:
+                    n0 = binomial(n, 0.5)
+                    nn = binomial(n-n0, w[0])
+                    npos = n - n0 - nn
+                    return np.concatenate((-abs(normal(0, scale=sd[0], size=nn)), np.zeros(n0), abs(normal(0, scale=sd[1], size=npos))))
+                elif h < 0:
+                    n0 = binomial(n, 0.5)
+                    npos = binomial(n-n0, w[0])
+                    nn = n - n0 - npos
+                    return np.concatenate((-abs(normal(0, scale=sd[0], size=nn)), np.zeros(n0), abs(normal(0, scale=sd[1], size=npos))))
+                elif h == 0 and beta > beta_t:
+                    return normal(0, scale=sd, size=n)
+                elif h == 0 and beta == beta_t:
+                    return warnings.warn("MLE is not root N consistent at the threshold.")
+                else:
+                    return warnings.warn("All estimators are inconsistent in this regime.")
 
-
+  
