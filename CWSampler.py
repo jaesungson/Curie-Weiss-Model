@@ -180,7 +180,12 @@ class CWModel:
         def f(beta_hat):
             return np.sum(self.pmf(beta_hat, h) * mag_values ** p) - x ** p
         
-        i = -0.35
+        # See Theorems 5 and 6: rates of convergence differ for special points
+        if self.point != 'special':
+            i = -0.35
+        else:
+            i = -0.6
+        
         while i < 0:
             try:
                 return optimize.brentq(f, (1-N**i)*beta, (1+N**i)*beta)
@@ -196,7 +201,11 @@ class CWModel:
         def f(h_hat):
             return np.sum(self.pmf(beta, h_hat) * mag_values) - x
         
-        i = -0.35
+        if self.point != 'special':
+            i = -0.35
+        else:
+            i = -0.6
+        
         while i < 0:
             try:
                 return optimize.brentq(f, h-N**i, h+N**i)
@@ -247,7 +256,7 @@ class CWModel:
         sd = self.sd
         beta, h, p  = self.beta, self.h, self.p
         if self.point == 'regular':
-            return norm.ppf(q, scale=sd)
+            return norm.ppf(q, scale=sd[0])
         elif self.point == 'special':
             m = self.maximizers[0]
             if q == 0.5:
@@ -299,7 +308,7 @@ class CWModel:
         sd = self.sd/(p*self.maximizers**(p-1))
         if self.point == 'regular':
             if self.maximizers != 0:
-                return norm.ppf(sd)
+                return norm.ppf(q, scale=sd[0])
             else:
                 return warnings.warn("All estimators are inconsistent in this regime.")
         elif self.point == 'special':
@@ -341,7 +350,7 @@ class CWModel:
                     else:
                         return norm.ppf((q-w[0])/(1-w[0]), scale=sd[1])
                 elif h == 0 and beta > beta_t:
-                    return norm.ppf(q, scale=sd)
+                    return norm.ppf(q, scale=sd[0])
                 elif h == 0 and beta == beta_t:
                     return warnings.warn("MLE is not root N consistent at the threshold.")
                 else:
@@ -355,7 +364,7 @@ class CWModel:
         sd = self.sd
         
         if self.point == 'regular':
-            return  normal(0, scale=sd, size=n)
+            return  normal(0, scale=sd[0], size=n)
         elif self.point == 'special':
             return G1Sampler(beta, h, p, m).rvs(size=n)
         else:
@@ -390,7 +399,7 @@ class CWModel:
         
         if self.point == 'regular':
             if m != 0:
-                return normal(0, scale=sd, size=n)
+                return normal(0, scale=sd[0], size=n)
             else:
                 return warnings.warn("All estimators are inconsistent in this regime.")
         elif self.point == 'special':
